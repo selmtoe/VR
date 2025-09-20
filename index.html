@@ -21,6 +21,7 @@
             z-index: 100;
             display: block;
             padding: 10px;
+            font-size: 14px;
         }
         #vr-button {
             position: absolute;
@@ -46,7 +47,7 @@
 <body>
     <div id="info">
         VR Physics Playground<br/>
-        コントローラーのトリガーで物を掴んだり、離したりできます。
+        トリガーで物を掴む・離す。銃を掴んでいる時にトリガーを引くと発射します。
     </div>
     
     <script type="importmap">
@@ -67,11 +68,13 @@
         let camera, scene, renderer;
         let world;
         const objects = [];
-        const timeStep = 1 / 60;
+        const timeStep = 1 / 60; // 60 FPS
+        const clock = new THREE.Clock();
 
         let controller1, controller2;
         let grabbedObject = null;
         let grabbedController = null;
+        let gunObject = null; // 銃オブジェクトを保持する変数
 
         init();
 
@@ -91,13 +94,13 @@
             const dirLight = new THREE.DirectionalLight(0xffffff, 1.0);
             dirLight.position.set(5, 10, 7.5);
             dirLight.castShadow = true;
-            dirLight.shadow.mapSize.width = 1024;
-            dirLight.shadow.mapSize.height = 1024;
+            dirLight.shadow.mapSize.width = 2048; // Shadow quality
+            dirLight.shadow.mapSize.height = 2048;
             scene.add(dirLight);
 
             // -- 物理エンジンの設定 --
             world = new CANNON.World();
-            world.gravity.set(0, -9.82, 0); // 重力設定
+            world.gravity.set(0, -9.82, 0);
 
             // -- オブジェクトの作成 --
             // 床
@@ -107,9 +110,9 @@
             floor.rotation.x = -Math.PI / 2;
             floor.receiveShadow = true;
             scene.add(floor);
-            // 物理的な床
+            
             const floorShape = new CANNON.Plane();
-            const floorBody = new CANNON.Body({ mass: 0 }); // mass: 0 は静的なオブジェクト
+            const floorBody = new CANNON.Body({ mass: 0 });
             floorBody.addShape(floorShape);
             floorBody.quaternion.setFromAxisAngle(new CANNON.Vec3(1, 0, 0), -Math.PI / 2);
             world.addBody(floorBody);
@@ -142,7 +145,6 @@
                     shape: shape
                 });
                 world.addBody(body);
-
                 objects.push({ mesh, body });
             }
 
@@ -171,13 +173,11 @@
         function createGun() {
             const gunGroup = new THREE.Group();
             
-            // 本体
             const bodyGeo = new THREE.BoxGeometry(0.05, 0.1, 0.25);
             const bodyMat = new THREE.MeshStandardMaterial({ color: 0x333333 });
             const bodyMesh = new THREE.Mesh(bodyGeo, bodyMat);
             gunGroup.add(bodyMesh);
 
-            // グリップ
             const gripGeo = new THREE.BoxGeometry(0.05, 0.2, 0.05);
             const gripMat = new THREE.MeshStandardMaterial({ color: 0x555555 });
             const gripMesh = new THREE.Mesh(gripGeo, gripMat);
@@ -187,9 +187,9 @@
             
             gunGroup.position.set(0, 1.2, 0);
             gunGroup.castShadow = true;
+            gunGroup.children.forEach(c => c.castShadow = true);
             scene.add(gunGroup);
             
-            // 物理ボディ（複数のシェイプを組み合わせる）
             const gunBody = new CANNON.Body({ mass: 2 });
             
             const bodyShape = new CANNON.Box(new CANNON.Vec3(0.025, 0.05, 0.125));
@@ -204,52 +204,62 @@
             gunBody.position.copy(gunGroup.position);
             world.addBody(gunBody);
             
-            objects.push({ mesh: gunGroup, body: gunBody });
+            gunObject = { mesh: gunGroup, body: gunBody, isGun: true }; // 識別用のフラグを追加
+            objects.push(gunObject);
         }
 
 
         function setupControllers() {
-            // コントローラー1
-            controller1 = renderer.xr.getController(0);
-            controller1.addEventListener('selectstart', onSelectStart);
-            controller1.addEventListener('selectend', onSelectEnd);
-            scene.add(controller1);
+            function createController(index) {
+                const controller = renderer.xr.getController(index);
+                controller.addEventListener('selectstart', onSelectStart);
+                controller.addEventListener('selectend', onSelectEnd);
+                scene.add(controller);
 
-            // コントローラー2
-            controller2 = renderer.xr.getController(1);
-            controller2.addEventListener('selectstart', onSelectStart);
-            controller2.addEventListener('selectend', onSelectEnd);
-            scene.add(controller2);
-            
-            // コントローラーの見た目
-            const controllerGrip1 = renderer.xr.getControllerGrip(0);
-            const controllerGrip2 = renderer.xr.getControllerGrip(1);
-            
-            const controllerModelFactory = {
-                createControllerModel: function (controller) {
-                    const geometry = new THREE.BufferGeometry();
-                    geometry.setAttribute('position', new THREE.Float32BufferAttribute([0, 0, 0, 0, 0, -0.1], 3));
-                    const material = new THREE.LineBasicMaterial({ color: 0xffffff, linewidth: 2 });
-                    const line = new THREE.Line(geometry, material);
-                    line.scale.z = 5;
-                    controller.add(line.clone());
-                    return controller;
-                }
-            };
-            
-            controllerGrip1.add(controllerModelFactory.createControllerModel(controller1));
-            controllerGrip2.add(controllerModelFactory.createControllerModel(controller2));
-            scene.add(controllerGrip1);
-            scene.add(controllerGrip2);
+                const grip = renderer.xr.getControllerGrip(index);
+                scene.add(grip);
+                
+                // --- 手の位置を示すマーカーを追加 ---
+                const handMarker = new THREE.Mesh(
+                    new THREE.SphereGeometry(0.03, 16, 16),
+                    new THREE.MeshStandardMaterial({ 
+                        color: 0xffffff, 
+                        transparent: true, 
+                        opacity: 0.5,
+                        emissive: 0xaaaaaa,
+                        emissiveIntensity: 0.5
+                    })
+                );
+                grip.add(handMarker);
+
+                // --- 速度計算用のデータを初期化 ---
+                controller.userData.velocity = new THREE.Vector3();
+                controller.userData.angularVelocity = new THREE.Vector3();
+                controller.userData.lastPosition = new THREE.Vector3();
+                controller.userData.lastQuaternion = new THREE.Quaternion();
+
+                return controller;
+            }
+
+            controller1 = createController(0);
+            controller2 = createController(1);
         }
 
         function onSelectStart(event) {
             const controller = event.target;
+            
+            // --- 銃を掴んでいたら発射する ---
+            if (grabbedObject && grabbedObject.isGun && grabbedController === controller) {
+                fireGun(controller);
+                return;
+            }
+
+            // --- 物を掴む処理 ---
             const controllerPosition = new THREE.Vector3();
             controller.getWorldPosition(controllerPosition);
 
             let closestObject = null;
-            let minDistance = 0.1; // 掴める最大距離
+            let minDistance = 0.15; // 掴める最大距離を少し広げる
 
             objects.forEach(obj => {
                 const dist = obj.mesh.position.distanceTo(controllerPosition);
@@ -262,35 +272,82 @@
             if (closestObject) {
                 grabbedObject = closestObject;
                 grabbedController = controller;
-                // 掴んだオブジェクトを物理的に固定する
                 grabbedObject.body.type = CANNON.Body.KINEMATIC;
             }
         }
 
-        function onSelectEnd() {
-            if (grabbedObject) {
-                // オブジェクトを物理的に解放する
+        function onSelectEnd(event) {
+            if (grabbedObject && grabbedController === event.target) {
                 grabbedObject.body.type = CANNON.Body.DYNAMIC;
-
-                // コントローラーの速度と角速度を取得してオブジェクトに与える
-                const controllerPosition = new THREE.Vector3();
-                const controllerQuaternion = new THREE.Quaternion();
-                grabbedController.getWorldPosition(controllerPosition);
-                grabbedController.getWorldQuaternion(controllerQuaternion);
                 
-                // 簡易的な速度計算
-                // (本来はフレーム間の移動量から計算するが、ここでは固定値で投げる)
-                const impulse = new THREE.Vector3();
-                grabbedController.getWorldDirection(impulse);
-                impulse.multiplyScalar(-10); // 投げる強さ
-
-                grabbedObject.body.velocity.set(impulse.x, impulse.y, impulse.z);
+                // --- コントローラーの速度と角速度をオブジェクトに与える ---
+                const controller = grabbedController;
+                const linearVelocity = controller.userData.velocity;
+                const angularVelocity = controller.userData.angularVelocity;
+                
+                grabbedObject.body.velocity.set(linearVelocity.x, linearVelocity.y, linearVelocity.z);
+                grabbedObject.body.angularVelocity.set(angularVelocity.x, angularVelocity.y, angularVelocity.z);
 
                 grabbedObject = null;
                 grabbedController = null;
             }
         }
         
+        function fireGun(controller) {
+            if (!gunObject) return;
+
+            const bulletSpeed = 30;
+            const bulletRadius = 0.05;
+
+            // 銃弾の作成
+            const bulletMesh = new THREE.Mesh(
+                new THREE.SphereGeometry(bulletRadius, 16, 16),
+                new THREE.MeshStandardMaterial({ color: 0xffff00, emissive: 0xffff00, emissiveIntensity: 1 })
+            );
+            bulletMesh.castShadow = true;
+
+            const bulletBody = new CANNON.Body({
+                mass: 0.1,
+                shape: new CANNON.Sphere(bulletRadius),
+            });
+
+            // 銃口の位置と向きを計算
+            const gunMesh = gunObject.mesh;
+            const direction = new THREE.Vector3();
+            gunMesh.getWorldDirection(direction);
+
+            const spawnPosition = new THREE.Vector3();
+            gunMesh.getWorldPosition(spawnPosition);
+            spawnPosition.add(direction.multiplyScalar(0.2)); // 銃口の少し前から発射
+
+            bulletMesh.position.copy(spawnPosition);
+            bulletBody.position.copy(spawnPosition);
+            
+            // 銃弾の初速を設定
+            gunMesh.getWorldDirection(direction); // 再度向きを取得
+            bulletBody.velocity.set(
+                direction.x * bulletSpeed,
+                direction.y * bulletSpeed,
+                direction.z * bulletSpeed
+            );
+            
+            scene.add(bulletMesh);
+            world.addBody(bulletBody);
+            
+            const bullet = { mesh: bulletMesh, body: bulletBody };
+            objects.push(bullet);
+
+            // 5秒後に銃弾を消す
+            setTimeout(() => {
+                scene.remove(bullet.mesh);
+                world.removeBody(bullet.body);
+                const index = objects.indexOf(bullet);
+                if (index > -1) {
+                    objects.splice(index, 1);
+                }
+            }, 5000);
+        }
+
         function handleController(controller) {
             if (grabbedObject && grabbedController === controller) {
                 const controllerPosition = new THREE.Vector3();
@@ -303,6 +360,33 @@
             }
         }
 
+        function updateControllerVelocities(controller, delta) {
+            if (delta > 0) {
+                const currentPosition = new THREE.Vector3();
+                const currentQuaternion = new THREE.Quaternion();
+                controller.getWorldPosition(currentPosition);
+                controller.getWorldQuaternion(currentQuaternion);
+                
+                // 線形速度の計算
+                controller.userData.velocity
+                    .subVectors(currentPosition, controller.userData.lastPosition)
+                    .divideScalar(delta);
+
+                // 角速度の計算
+                const deltaQuaternion = currentQuaternion.clone().multiply(controller.userData.lastQuaternion.clone().invert());
+                const axis = new THREE.Vector3();
+                let angle = 2 * Math.acos(deltaQuaternion.w);
+                if (angle > Math.PI) {
+                    angle -= 2 * Math.PI;
+                }
+                axis.set(deltaQuaternion.x, deltaQuaternion.y, deltaQuaternion.z).normalize().multiplyScalar(angle / delta);
+                controller.userData.angularVelocity.copy(axis);
+
+                controller.userData.lastPosition.copy(currentPosition);
+                controller.userData.lastQuaternion.copy(currentQuaternion);
+            }
+        }
+
         function onWindowResize() {
             camera.aspect = window.innerWidth / window.innerHeight;
             camera.updateProjectionMatrix();
@@ -310,19 +394,23 @@
         }
         
         function animate() {
+            const delta = clock.getDelta();
+            
             // 物理ワールドの時間を進める
-            world.step(timeStep);
+            if (delta > 0) world.step(timeStep, delta);
 
-            // コントローラーの処理
+            // コントローラーの速度と位置を更新
+            updateControllerVelocities(controller1, delta);
+            updateControllerVelocities(controller2, delta);
             handleController(controller1);
             handleController(controller2);
             
             // 3Dオブジェクトと物理ボディの位置を同期
             for (const obj of objects) {
-                 if (obj.body.type !== CANNON.Body.KINEMATIC) { // 掴んでいないオブジェクトのみ同期
+                if (obj.body.type !== CANNON.Body.KINEMATIC) {
                     obj.mesh.position.copy(obj.body.position);
                     obj.mesh.quaternion.copy(obj.body.quaternion);
-                } else { // 掴んでいるオブジェクトはコントローラーに追従
+                } else {
                     obj.mesh.position.copy(obj.body.position);
                     obj.mesh.quaternion.copy(obj.body.quaternion);
                 }
