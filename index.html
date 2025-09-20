@@ -423,12 +423,15 @@
                 direction.subVectors(targetPos, spawnPosition).normalize();
                 spawnPosition.add(direction.clone().multiplyScalar(0.5));
             } else {
-                // For player, get direction from the gun mesh itself
-                const gunDirection = new THREE.Vector3(0, 0, 1); // Muzzle direction in local space
-                gun.mesh.getWorldDirection(gunDirection);
-                direction.copy(gunDirection);
-                gun.mesh.getWorldPosition(spawnPosition);
-                spawnPosition.add(direction.clone().multiplyScalar(gun.gunType === 'rocketlauncher' ? 1.5 : 0.5));
+    // 銃のメッシュのワールド座標における forward (前方向) を取得する
+        gun.mesh.getWorldPosition(spawnPosition);
+        // メッシュのワールド行列から前方ベクトルを抽出
+        gun.mesh.matrixWorld.getBasis(direction).normalize();
+        // 前方ベクトルは通常は(1,0,0)か(0,1,0)か(0,0,1)なので、銃口の向きに合わせる
+        // このコードの場合、銃口は -Z 方向を向いている
+        direction.multiplyScalar(-1);
+        
+        spawnPosition.add(direction.clone().multiplyScalar(gun.gunType === 'rocketlauncher' ? 1.5 : 0.5));
             }
             
             const fireActions = {
