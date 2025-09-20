@@ -424,7 +424,7 @@
                 spawnPosition.add(direction.clone().multiplyScalar(0.5));
             } else {
                 // For player, get direction from the gun mesh itself
-                const gunDirection = new THREE.Vector3(0, 0, -1); // Muzzle direction in local space
+                const gunDirection = new THREE.Vector3(0, 0, 1); // Muzzle direction in local space
                 gun.mesh.getWorldDirection(gunDirection);
                 direction.copy(gunDirection);
                 gun.mesh.getWorldPosition(spawnPosition);
