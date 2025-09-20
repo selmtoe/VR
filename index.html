@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html lang="ja">
 <head>
-    <title>VR Physics Playground</title>
+    <title>VR Physics Playground (Enhanced)</title>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
     <style>
@@ -24,11 +24,24 @@
             font-size: 14px;
         }
         canvas { display: block; }
+        .hp-bar {
+            position: absolute;
+            width: 100px;
+            height: 10px;
+            background-color: #555;
+            border: 1px solid #fff;
+            transform: translateX(-50%); /* 中央揃え */
+        }
+        .hp-bar-inner {
+            width: 100%;
+            height: 100%;
+            background-color: #ff0000;
+        }
     </style>
 </head>
 <body>
     <div id="info">
-        VR Physics Playground<br/>
+        VR Physics Playground (Enhanced)<br/>
         グリップボタンで物を掴む・離す。銃を掴んでいる時にトリガーを引くと発射します。
     </div>
     
@@ -50,6 +63,8 @@
         let camera, scene, renderer;
         let world;
         const objects = [];
+        const enemies = [];
+        const bullets = [];
         const timeStep = 1 / 60;
         const clock = new THREE.Clock();
 
@@ -61,8 +76,8 @@
             scene = new THREE.Scene();
             scene.background = new THREE.Color(0x444444);
 
-            camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.1, 100);
-            camera.position.set(0, 1.6, 4);
+            camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.1, 200);
+            camera.position.set(0, 1.6, 8);
             scene.add(camera);
 
             const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
@@ -77,9 +92,11 @@
 
             world = new CANNON.World();
             world.gravity.set(0, -9.82, 0);
+            world.broadphase = new CANNON.NaiveBroadphase();
+            world.solver.iterations = 10;
 
             // Floor
-            const floorGeometry = new THREE.PlaneGeometry(20, 20);
+            const floorGeometry = new THREE.PlaneGeometry(50, 50);
             const floorMaterial = new THREE.MeshStandardMaterial({ color: 0x888888, side: THREE.DoubleSide });
             const floor = new THREE.Mesh(floorGeometry, floorMaterial);
             floor.rotation.x = -Math.PI / 2;
@@ -93,8 +110,8 @@
             world.addBody(floorBody);
 
             // Random objects
-            const boxGeometry = new THREE.BoxGeometry(0.2, 0.2, 0.2);
-            const sphereGeometry = new THREE.SphereGeometry(0.1, 32, 32);
+            const boxGeometry = new THREE.BoxGeometry(0.5, 0.5, 0.5);
+            const sphereGeometry = new THREE.SphereGeometry(0.25, 32, 32);
 
             for (let i = 0; i < 30; i++) {
                 const isBox = Math.random() > 0.5;
@@ -104,18 +121,18 @@
                 );
                 mesh.castShadow = true;
                 mesh.position.set(
-                    (Math.random() - 0.5) * 8,
+                    (Math.random() - 0.5) * 20,
                     Math.random() * 5 + 1,
-                    (Math.random() - 0.5) * 8
+                    (Math.random() - 0.5) * 20
                 );
                 scene.add(mesh);
 
                 const shape = isBox
-                    ? new CANNON.Box(new CANNON.Vec3(0.1, 0.1, 0.1))
-                    : new CANNON.Sphere(0.1);
+                    ? new CANNON.Box(new CANNON.Vec3(0.25, 0.25, 0.25))
+                    : new CANNON.Sphere(0.25);
 
                 const body = new CANNON.Body({
-                    mass: 1,
+                    mass: 5,
                     position: new CANNON.Vec3().copy(mesh.position),
                     shape: shape
                 });
@@ -123,10 +140,20 @@
                 objects.push({ mesh, body });
             }
 
-            // Create Guns
-            createHandgun(new THREE.Vector3(0, 1.2, 0));
-            createMachineGun(new THREE.Vector3(-1, 1.2, 0));
-            createSniperRifle(new THREE.Vector3(1, 1.2, 0));
+            // --- Create Weapons ---
+            createHandgun(new THREE.Vector3(0, 1.2, 4));
+            createMachineGun(new THREE.Vector3(-1, 1.2, 4));
+            createSniperRifle(new THREE.Vector3(1, 1.2, 4));
+            createShotgun(new THREE.Vector3(-2, 1.2, 4));
+            createRocketLauncher(new THREE.Vector3(2, 1.2, 4));
+            createFlamethrower(new THREE.Vector3(0, 1.2, 3));
+            
+            // --- Create Enemies ---
+            createTank(new THREE.Vector3(0, 0, -10));
+            createEnemyHuman(new THREE.Vector3(-8, 0, -5), 'handgun');
+            createEnemyHuman(new THREE.Vector3(8, 0, -5), 'handgun');
+            createEnemyHuman(new THREE.Vector3(-10, 0, 0), 'machinegun');
+            createEnemyHuman(new THREE.Vector3(10, 0, 0), 'machinegun');
 
             renderer = new THREE.WebGLRenderer({ antialias: true });
             renderer.setSize(window.innerWidth, window.innerHeight);
@@ -142,8 +169,9 @@
 
             renderer.setAnimationLoop(animate);
         }
-
-        function createGunObject(mesh, body, gunType, fireRate, bulletSpeed) {
+        
+        // --- Weapon Creation ---
+        function createGunObject(mesh, body, gunType, fireRate, bulletSpeed, damage, special = {}) {
              const gunObject = { 
                 mesh, 
                 body, 
@@ -151,6 +179,8 @@
                 gunType,
                 fireRate, // ms
                 bulletSpeed,
+                damage,
+                special,
                 lastFireTime: 0
             };
             objects.push(gunObject);
@@ -182,7 +212,7 @@
             body.addShape(gripShape, gripPos, gripQuat);
             world.addBody(body);
 
-            createGunObject(group, body, 'handgun', 500, 40);
+            createGunObject(group, body, 'handgun', 500, 40, 10);
         }
 
         function createMachineGun(position) {
@@ -190,28 +220,21 @@
             const mainMat = new THREE.MeshStandardMaterial({ color: 0x3d3d3d });
             
             const body = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.1, 0.5), mainMat);
-            body.position.y = 0.05;
-            group.add(body);
-
+            body.position.y = 0.05; group.add(body);
             const grip = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.15, 0.05), mainMat);
-            grip.position.set(0, 0, 0.1);
-            grip.rotation.x = 0.2;
-            group.add(grip);
-            
+            grip.position.set(0, 0, 0.1); grip.rotation.x = 0.2; group.add(grip);
             const stock = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.08, 0.25), mainMat);
-            stock.position.set(0, 0, 0.3);
-            group.add(stock);
+            stock.position.set(0, 0, 0.3); group.add(stock);
 
             group.position.copy(position);
-            group.castShadow = true;
-            group.children.forEach(c => c.castShadow = true);
+            group.castShadow = true; group.children.forEach(c => c.castShadow = true);
             scene.add(group);
 
             const cBody = new CANNON.Body({ mass: 2.5, position: new CANNON.Vec3().copy(position) });
             cBody.addShape(new CANNON.Box(new CANNON.Vec3(0.04, 0.05, 0.25)), new CANNON.Vec3(0, 0.05, 0));
             world.addBody(cBody);
 
-            createGunObject(group, cBody, 'machinegun', 100, 30);
+            createGunObject(group, cBody, 'machinegun', 100, 30, 8);
         }
 
         function createSniperRifle(position) {
@@ -220,24 +243,170 @@
             
             const body = new THREE.Mesh(new THREE.BoxGeometry(0.07, 0.08, 0.9), mainMat);
             group.add(body);
-            
             const scope = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.03, 0.2, 16), mainMat);
-            scope.rotation.x = Math.PI / 2;
-            scope.position.y = 0.08;
-            group.add(scope);
+            scope.rotation.x = Math.PI / 2; scope.position.y = 0.08; group.add(scope);
 
             group.position.copy(position);
-            group.castShadow = true;
-            group.children.forEach(c => c.castShadow = true);
+            group.castShadow = true; group.children.forEach(c => c.castShadow = true);
             scene.add(group);
 
             const cBody = new CANNON.Body({ mass: 3, position: new CANNON.Vec3().copy(position) });
             cBody.addShape(new CANNON.Box(new CANNON.Vec3(0.035, 0.04, 0.45)));
             world.addBody(cBody);
             
-            createGunObject(group, cBody, 'sniper', 1000, 100);
+            createGunObject(group, cBody, 'sniper', 1000, 100, 75);
         }
 
+        function createShotgun(position) {
+            const group = new THREE.Group();
+            const mat = new THREE.MeshStandardMaterial({ color: 0x604020 });
+            
+            const body = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.08, 0.7), mat);
+            group.add(body);
+            const pump = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.03, 0.4, 16), mat);
+            pump.rotation.z = Math.PI / 2; pump.position.y = -0.06; group.add(pump);
+            
+            group.position.copy(position);
+            scene.add(group);
+
+            const cBody = new CANNON.Body({ mass: 2.8, position: new CANNON.Vec3().copy(position) });
+            cBody.addShape(new CANNON.Box(new CANNON.Vec3(0.04, 0.04, 0.35)));
+            world.addBody(cBody);
+            
+            createGunObject(group, cBody, 'shotgun', 800, 35, 8, { pellets: 8 });
+        }
+        
+        function createRocketLauncher(position) {
+            const group = new THREE.Group();
+            const mat = new THREE.MeshStandardMaterial({ color: 0x4B5320 });
+            
+            const tube = new THREE.Mesh(new THREE.CylinderGeometry(0.1, 0.1, 1.2, 24), mat);
+            tube.rotation.x = Math.PI / 2;
+            group.add(tube);
+            
+            group.position.copy(position);
+            scene.add(group);
+
+            const cBody = new CANNON.Body({ mass: 5, position: new CANNON.Vec3().copy(position) });
+            cBody.addShape(new CANNON.Cylinder(0.1, 0.1, 1.2, 24));
+            cBody.quaternion.setFromAxisAngle(new CANNON.Vec3(1,0,0), -Math.PI/2);
+            world.addBody(cBody);
+            
+            createGunObject(group, cBody, 'rocketlauncher', 2000, 20, 150, { explosionRadius: 5 });
+        }
+        
+        function createFlamethrower(position) {
+            const group = new THREE.Group();
+            const mat = new THREE.MeshStandardMaterial({ color: 0xcc5500 });
+
+            const tank1 = new THREE.Mesh(new THREE.CylinderGeometry(0.08, 0.08, 0.4, 16), mat);
+            tank1.position.z = 0.2;
+            group.add(tank1);
+            const hose = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.05, 0.5), mat);
+            group.add(hose);
+
+            group.position.copy(position);
+            scene.add(group);
+
+            const cBody = new CANNON.Body({ mass: 4, position: new CANNON.Vec3().copy(position) });
+            cBody.addShape(new CANNON.Box(new CANNON.Vec3(0.08, 0.08, 0.25)));
+            world.addBody(cBody);
+            
+            createGunObject(group, cBody, 'flamethrower', 50, 10, 2);
+        }
+
+        // --- Enemy Creation ---
+        function createEnemyHuman(position, weaponType) {
+            const mat = new THREE.MeshStandardMaterial({ color: 0xff4444 });
+            const group = new THREE.Group();
+
+            const head = new THREE.Mesh(new THREE.SphereGeometry(0.15, 16, 16), mat);
+            head.position.y = 1.6;
+            group.add(head);
+
+            const body = new THREE.Mesh(new THREE.BoxGeometry(0.4, 0.6, 0.2), mat);
+            body.position.y = 1.1;
+            group.add(body);
+            
+            group.position.copy(position);
+            scene.add(group);
+
+            const cBody = new CANNON.Body({ mass: 80, position: new CANNON.Vec3(position.x, 1, position.z) });
+            cBody.addShape(new CANNON.Box(new CANNON.Vec3(0.2, 0.9, 0.2)));
+            world.addBody(cBody);
+            
+            const hpBar = document.createElement('div');
+            hpBar.className = 'hp-bar';
+            const hpBarInner = document.createElement('div');
+            hpBarInner.className = 'hp-bar-inner';
+            hpBar.appendChild(hpBarInner);
+            document.body.appendChild(hpBar);
+
+            const enemy = {
+                mesh: group,
+                body: cBody,
+                isEnemy: true,
+                type: 'human',
+                health: 100,
+                maxHealth: 100,
+                weaponType,
+                lastShotTime: 0,
+                hpBar,
+                hpBarInner
+            };
+            cBody.userData = enemy;
+            enemies.push(enemy);
+        }
+        
+        function createTank(position) {
+            const group = new THREE.Group();
+            const bodyMat = new THREE.MeshStandardMaterial({ color: 0x333A2E });
+            
+            const hull = new THREE.Mesh(new THREE.BoxGeometry(4, 1.5, 7), bodyMat);
+            hull.position.y = 0.75;
+            group.add(hull);
+
+            const turret = new THREE.Mesh(new THREE.BoxGeometry(2, 1, 2.5), bodyMat);
+            turret.position.y = 2.0;
+            group.add(turret);
+
+            const barrel = new THREE.Mesh(new THREE.CylinderGeometry(0.15, 0.15, 4, 16), bodyMat);
+            barrel.rotation.x = Math.PI / 2;
+            barrel.position.set(0, 2.0, -3.25);
+            turret.add(barrel); // Add barrel to turret for rotation
+
+            group.position.copy(position);
+            scene.add(group);
+
+            const cBody = new CANNON.Body({ mass: 5000, position: new CANNON.Vec3(position.x, 0.75, position.z) });
+            cBody.addShape(new CANNON.Box(new CANNON.Vec3(2, 0.75, 3.5)));
+            world.addBody(cBody);
+
+            const hpBar = document.createElement('div');
+            hpBar.className = 'hp-bar';
+            const hpBarInner = document.createElement('div');
+hpBarInner.className = 'hp-bar-inner';
+            hpBar.appendChild(hpBarInner);
+            document.body.appendChild(hpBar);
+            
+            const enemy = {
+                mesh: group,
+                body: cBody,
+                isEnemy: true,
+                type: 'tank',
+                health: 500,
+                maxHealth: 500,
+                lastShotTime: 0,
+                turret,
+                barrel,
+                hpBar,
+                hpBarInner
+            };
+            cBody.userData = enemy;
+            enemies.push(enemy);
+        }
+
+        // --- Controllers & Interaction ---
         function setupControllers() {
             function createController(index) {
                 const controller = renderer.xr.getController(index);
@@ -257,12 +426,9 @@
                 grip.add(handMarker);
 
                 controller.userData = {
-                    velocity: new THREE.Vector3(),
-                    angularVelocity: new THREE.Vector3(),
-                    lastPosition: new THREE.Vector3(),
-                    lastQuaternion: new THREE.Quaternion(),
-                    grabbedObject: null,
-                    isTriggerDown: false
+                    velocity: new THREE.Vector3(), angularVelocity: new THREE.Vector3(),
+                    lastPosition: new THREE.Vector3(), lastQuaternion: new THREE.Quaternion(),
+                    grabbedObject: null, isTriggerDown: false
                 };
                 return controller;
             }
@@ -270,7 +436,6 @@
             controller2 = createController(1);
         }
 
-        // --- Grip Events (Squeeze button) ---
         function onGripStart(event) {
             const controller = event.target;
             if (controller.userData.grabbedObject) return;
@@ -279,7 +444,7 @@
             controller.getWorldPosition(controllerPosition);
 
             let closestObject = null;
-            let minDistance = 0.15;
+            let minDistance = 0.5; // Increased grab range
 
             objects.forEach(obj => {
                 const dist = obj.mesh.position.distanceTo(controllerPosition);
@@ -306,13 +471,12 @@
             }
         }
 
-        // --- Trigger Events (Select button) ---
         function onTriggerStart(event) {
             const controller = event.target;
             controller.userData.isTriggerDown = true;
             const heldObject = controller.userData.grabbedObject;
             if (heldObject && heldObject.isGun) {
-                 if (heldObject.gunType !== 'machinegun') {
+                 if (heldObject.gunType !== 'machinegun' && heldObject.gunType !== 'flamethrower') {
                     fireGun(heldObject, controller);
                 }
             }
@@ -322,58 +486,142 @@
             event.target.userData.isTriggerDown = false;
         }
         
-        function fireGun(gun, controller) {
+        function fireGun(gun, controller, isEnemy = false, targetPos) {
             const now = performance.now();
-            if (now - gun.lastFireTime < gun.fireRate) {
-                return;
-            }
+            if (now - gun.lastFireTime < gun.fireRate) return;
             gun.lastFireTime = now;
+            
+            const direction = new THREE.Vector3();
+            if(isEnemy) {
+                direction.subVectors(targetPos, gun.mesh.position).normalize();
+            } else {
+                gun.mesh.getWorldDirection(direction);
+            }
 
-            const bulletRadius = 0.05;
+            const spawnPosition = new THREE.Vector3();
+            gun.mesh.getWorldPosition(spawnPosition);
+            spawnPosition.add(direction.clone().multiplyScalar(gun.gunType === 'rocketlauncher' ? 1.5 : 0.5));
+            
+            const fireActions = {
+                'shotgun': () => {
+                    for(let i=0; i < gun.special.pellets; i++) {
+                        const spread = new THREE.Vector3(
+                           (Math.random() - 0.5) * 0.2,
+                           (Math.random() - 0.5) * 0.2,
+                           (Math.random() - 0.5) * 0.2
+                        );
+                        createBullet(spawnPosition, direction.clone().add(spread).normalize(), gun, controller, isEnemy);
+                    }
+                },
+                'rocketlauncher': () => createBullet(spawnPosition, direction, gun, controller, isEnemy, { isRocket: true, explosionRadius: gun.special.explosionRadius }),
+                'flamethrower': () => createBullet(spawnPosition, direction, gun, controller, isEnemy, { isFlame: true }),
+                'default': () => createBullet(spawnPosition, direction, gun, controller, isEnemy)
+            };
+            
+            (fireActions[gun.gunType] || fireActions['default'])();
+        }
+
+        function createBullet(position, direction, gun, controller, isEnemy = false, options = {}) {
+            const bulletRadius = options.isRocket ? 0.2 : (options.isFlame ? 0.1 : 0.05);
+            const bulletColor = options.isRocket ? 0x808080 : (options.isFlame ? 0xffa500 : 0xffff00);
+            
             const bulletMesh = new THREE.Mesh(
                 new THREE.SphereGeometry(bulletRadius, 16, 16),
-                new THREE.MeshStandardMaterial({ color: 0xffff00, emissive: 0xffff00 })
+                new THREE.MeshStandardMaterial({ color: bulletColor, emissive: bulletColor })
             );
             bulletMesh.castShadow = true;
 
             const bulletBody = new CANNON.Body({
-                mass: 0.1,
+                mass: options.isRocket ? 2 : 0.1,
                 shape: new CANNON.Sphere(bulletRadius),
             });
-
-            const direction = new THREE.Vector3();
-            gun.mesh.getWorldDirection(direction);
-            direction.negate();
-
-
-            const spawnPosition = new THREE.Vector3();
-            gun.mesh.getWorldPosition(spawnPosition);
-            spawnPosition.add(direction.clone().multiplyScalar(0.5)); // Spawn ahead of the gun
-
-            bulletMesh.position.copy(spawnPosition);
-            bulletBody.position.copy(spawnPosition);
             
-            const controllerVelocity = controller.userData.velocity;
-            bulletBody.velocity.set(
-                (direction.x * gun.bulletSpeed) + controllerVelocity.x,
-                (direction.y * gun.bulletSpeed) + controllerVelocity.y,
-                (direction.z * gun.bulletSpeed) + controllerVelocity.z
-            );
+            bulletMesh.position.copy(position);
+            bulletBody.position.copy(position);
+            
+            if (!isEnemy && controller) {
+                const controllerVelocity = controller.userData.velocity;
+                bulletBody.velocity.set(
+                    (direction.x * gun.bulletSpeed) + controllerVelocity.x,
+                    (direction.y * gun.bulletSpeed) + controllerVelocity.y,
+                    (direction.z * gun.bulletSpeed) + controllerVelocity.z
+                );
+            } else {
+                 bulletBody.velocity.set(
+                    direction.x * gun.bulletSpeed,
+                    direction.y * gun.bulletSpeed,
+                    direction.z * gun.bulletSpeed
+                );
+            }
             
             scene.add(bulletMesh);
             world.addBody(bulletBody);
             
-            const bullet = { mesh: bulletMesh, body: bulletBody };
-            objects.push(bullet);
+            const bullet = { mesh: bulletMesh, body: bulletBody, damage: gun.damage, isEnemyBullet: isEnemy, ...options };
+            bullets.push(bullet);
+            bulletBody.userData = bullet;
+
+            bulletBody.addEventListener("collide", handleCollision);
 
             setTimeout(() => {
-                scene.remove(bullet.mesh);
-                world.removeBody(bullet.body);
-                const index = objects.indexOf(bullet);
-                if (index > -1) objects.splice(index, 1);
-            }, 5000);
+                cleanupBullet(bullet);
+            }, options.isFlame ? 500 : 5000);
+        }
+        
+        function handleCollision(event) {
+            const bulletBody = event.target;
+            const hitBody = event.body;
+            const bullet = bulletBody.userData;
+            const hitObject = hitBody.userData;
+
+            if (bullet.isRocket) {
+                createExplosion(bullet.body.position, bullet.damage, bullet.explosionRadius);
+            } else if (hitObject && hitObject.isEnemy && !bullet.isEnemyBullet) {
+                hitObject.health -= bullet.damage;
+            } else if (!hitObject && !bullet.isEnemyBullet){ // player hit
+                // TODO: Player damage logic
+            }
+
+            cleanupBullet(bullet);
+        }
+        
+        function createExplosion(position, damage, radius) {
+            const explosionSphere = new THREE.Mesh(
+                new THREE.SphereGeometry(radius, 32, 32),
+                new THREE.MeshBasicMaterial({color: 0xffa500, transparent: true, opacity: 0.7})
+            );
+            explosionSphere.position.copy(position);
+            scene.add(explosionSphere);
+            
+            enemies.forEach(enemy => {
+                const dist = enemy.body.position.distanceTo(position);
+                if (dist < radius) {
+                    const damageFalloff = 1 - (dist / radius);
+                    enemy.health -= damage * damageFalloff;
+                    const impulseDir = new CANNON.Vec3();
+                    enemy.body.position.vsub(position, impulseDir);
+                    impulseDir.normalize();
+                    const impulseStrength = 2000 * damageFalloff;
+                    enemy.body.applyImpulse(impulseDir.scale(impulseStrength), enemy.body.position);
+                }
+            });
+
+            new THREE.Tween(explosionSphere.scale)
+                .to({x: 0.01, y: 0.01, z: 0.01}, 500)
+                .onComplete(() => scene.remove(explosionSphere))
+                .start();
         }
 
+        function cleanupBullet(bullet) {
+            if (!bullet) return;
+            const index = bullets.indexOf(bullet);
+            if (index > -1) bullets.splice(index, 1);
+            scene.remove(bullet.mesh);
+            world.removeBody(bullet.body);
+            bullet.body.removeEventListener("collide", handleCollision);
+        }
+
+        // --- Game Loop & Updates ---
         function handleController(controller) {
             const grabbedObject = controller.userData.grabbedObject;
             if (grabbedObject) {
@@ -387,9 +635,9 @@
             }
         }
         
-        function handleMachineGunFire(controller) {
+        function handleContinuousFire(controller) {
             const heldObject = controller.userData.grabbedObject;
-             if (controller.userData.isTriggerDown && heldObject && heldObject.isGun && heldObject.gunType === 'machinegun') {
+             if (controller.userData.isTriggerDown && heldObject && heldObject.isGun && (heldObject.gunType === 'machinegun' || heldObject.gunType === 'flamethrower')) {
                 fireGun(heldObject, controller);
             }
         }
@@ -413,6 +661,81 @@
                 controller.userData.lastQuaternion.copy(currentQuaternion);
             }
         }
+        
+        function updateEnemies(delta) {
+            const playerPos = camera.position;
+
+            for (let i = enemies.length - 1; i >= 0; i--) {
+                const enemy = enemies[i];
+                
+                // HP Check
+                if (enemy.health <= 0) {
+                    if (enemy.type === 'tank') createExplosion(enemy.body.position, 0, 8);
+                    world.removeBody(enemy.body);
+                    scene.remove(enemy.mesh);
+                    document.body.removeChild(enemy.hpBar);
+                    enemies.splice(i, 1);
+                    continue;
+                }
+                
+                // HP Bar Update
+                const screenPos = toScreenPosition(enemy.mesh, camera);
+                enemy.hpBar.style.left = `${screenPos.x}px`;
+                enemy.hpBar.style.top = `${screenPos.y - 50}px`;
+                enemy.hpBarInner.style.width = `${(enemy.health / enemy.maxHealth) * 100}%`;
+
+                // AI Logic
+                const enemyPos = enemy.body.position;
+                const directionToPlayer = new THREE.Vector3().subVectors(playerPos, enemyPos).normalize();
+                
+                if (enemy.type === 'tank') {
+                    enemy.turret.lookAt(playerPos);
+                    const now = performance.now();
+                    if (now - enemy.lastShotTime > 3000) {
+                        enemy.lastShotTime = now;
+                         const spawnPos = new THREE.Vector3();
+                         enemy.barrel.getWorldPosition(spawnPos);
+                         const barrelDir = new THREE.Vector3();
+                         enemy.barrel.getWorldDirection(barrelDir);
+
+                         createBullet(spawnPos, barrelDir.negate(), {bulletSpeed: 30, damage: 50}, null, true, {isRocket: true, explosionRadius: 3});
+                    }
+                } else if (enemy.type === 'human') {
+                    // Look at player
+                    enemy.mesh.lookAt(playerPos.x, enemy.mesh.position.y, playerPos.z);
+                    enemy.body.quaternion.copy(enemy.mesh.quaternion);
+
+                    const now = performance.now();
+                    const fireRate = enemy.weaponType === 'handgun' ? 1000 : 200;
+                    if(now - enemy.lastShotTime > fireRate) {
+                        enemy.lastShotTime = now;
+                        const gun = {
+                            mesh: enemy.mesh,
+                            gunType: enemy.weaponType,
+                            bulletSpeed: 25,
+                            damage: enemy.weaponType === 'handgun' ? 5 : 3,
+                            lastFireTime: 0
+                        };
+                         fireGun(gun, null, true, playerPos);
+                    }
+                }
+            }
+        }
+        
+        function toScreenPosition(obj, camera) {
+            const vector = new THREE.Vector3();
+            const widthHalf = 0.5 * renderer.domElement.width;
+            const heightHalf = 0.5 * renderer.domElement.height;
+            
+            obj.updateMatrixWorld();
+            vector.setFromMatrixPosition(obj.matrixWorld);
+            vector.project(camera);
+            
+            vector.x = ( vector.x * widthHalf ) + widthHalf;
+            vector.y = - ( vector.y * heightHalf ) + heightHalf;
+            
+            return { x: vector.x, y: vector.y };
+        }
 
         function onWindowResize() {
             camera.aspect = window.innerWidth / window.innerHeight;
@@ -421,31 +744,38 @@
         }
         
         function animate() {
-            const delta = clock.getDelta();
+            const delta = Math.min(clock.getDelta(), 0.1);
             
-            if (delta > 0) world.step(timeStep, delta);
+            if (renderer.xr.isPresenting) {
+                world.step(timeStep, delta);
 
-            [controller1, controller2].forEach(controller => {
-                 if (controller) {
-                    updateControllerVelocities(controller, delta);
-                    handleController(controller);
-                    handleMachineGunFire(controller);
-                }
-            });
-            
-            for (const obj of objects) {
-                if (obj.body.type !== CANNON.Body.KINEMATIC) {
-                    obj.mesh.position.copy(obj.body.position);
-                    obj.mesh.quaternion.copy(obj.body.quaternion);
-                } else { // Sync grabbed object's mesh to its body
-                     obj.mesh.position.copy(obj.body.position);
-                     obj.mesh.quaternion.copy(obj.body.quaternion);
+                [controller1, controller2].forEach(controller => {
+                     if (controller) {
+                        updateControllerVelocities(controller, delta);
+                        handleController(controller);
+                        handleContinuousFire(controller);
+                    }
+                });
+                
+                updateEnemies(delta);
+                
+                const allPhysObjects = [...objects, ...bullets, ...enemies];
+                for (const obj of allPhysObjects) {
+                    if (obj && obj.body && obj.mesh) {
+                        if (obj.body.type !== CANNON.Body.KINEMATIC) {
+                            obj.mesh.position.copy(obj.body.position);
+                            obj.mesh.quaternion.copy(obj.body.quaternion);
+                        } else {
+                            obj.mesh.position.copy(obj.body.position);
+                            obj.mesh.quaternion.copy(obj.body.quaternion);
+                        }
+                    }
                 }
             }
+            THREE.TWEEN.update();
             renderer.render(scene, camera);
         }
     </script>
 </body>
 </html>
-
 
