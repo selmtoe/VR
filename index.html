@@ -153,18 +153,16 @@
         // --- Object Creation ---
         function addPhysicalObject(mesh, body, customData = {}){
             const obj = { mesh, body, ...customData };
-            body.userData = obj;
+            body.userData = obj; // Link body back to the wrapped object
             physicalObjects.push(obj);
             return obj;
         }
 
         function createGunObject(mesh, body, gunType, fireRate, bulletSpeed, damage, special = {}) {
-            addPhysicalObject(mesh, body, { 
+            return addPhysicalObject(mesh, body, { 
                 isGun: true, gunType, fireRate, bulletSpeed, damage, special, lastFireTime: 0
             });
         }
-
-        // --- All weapon and enemy creation functions are the same as before, but using `addPhysicalObject` ---
 
         function createHandgun(position) {
             const group = new THREE.Group();
@@ -189,6 +187,7 @@
             world.addBody(body);
             createGunObject(group, body, 'handgun', 500, 40, 10);
         }
+
         function createMachineGun(position) {
             const group = new THREE.Group();
             const mainMat = new THREE.MeshStandardMaterial({ color: 0x3d3d3d });
@@ -206,6 +205,7 @@
             world.addBody(cBody);
             createGunObject(group, cBody, 'machinegun', 100, 30, 8);
         }
+
         function createSniperRifle(position) {
             const group = new THREE.Group();
             const mainMat = new THREE.MeshStandardMaterial({ color: 0x504A4B });
@@ -221,6 +221,7 @@
             world.addBody(cBody);
             createGunObject(group, cBody, 'sniper', 1000, 100, 75);
         }
+
         function createShotgun(position) {
             const group = new THREE.Group();
             const mat = new THREE.MeshStandardMaterial({ color: 0x604020 });
@@ -235,6 +236,7 @@
             world.addBody(cBody);
             createGunObject(group, cBody, 'shotgun', 800, 35, 8, { pellets: 8 });
         }
+
         function createRocketLauncher(position) {
             const group = new THREE.Group();
             const mat = new THREE.MeshStandardMaterial({ color: 0x4B5320 });
@@ -250,6 +252,7 @@
             world.addBody(cBody);
             createGunObject(group, cBody, 'rocketlauncher', 2000, 20, 150, { explosionRadius: 5 });
         }
+
         function createFlamethrower(position) {
             const group = new THREE.Group();
             const mat = new THREE.MeshStandardMaterial({ color: 0xcc5500 });
@@ -363,9 +366,12 @@
             const controllerPosition = new THREE.Vector3();
             controller.getWorldPosition(controllerPosition);
             let closestObject = null;
-            let minDistance = 0.5; // Increased grab range
-            for(const obj of physicalObjects){
-                if(!obj.isGun && !obj.isBullet){ // Only grab non-guns/bullets
+            let minDistance = 0.5; // Grab range
+            // Iterate backwards to make grabbing guns easier (they are added later)
+            for(let i = physicalObjects.length - 1; i >= 0; i--) {
+                const obj = physicalObjects[i];
+                // Allow grabbing guns OR other non-bullet/non-enemy objects
+                if(obj.isGun || (!obj.isBullet && !obj.isEnemy)) {
                     const dist = obj.mesh.position.distanceTo(controllerPosition);
                     if (dist < minDistance) {
                         closestObject = obj;
@@ -373,6 +379,7 @@
                     }
                 }
             }
+
             if (closestObject) {
                 controller.userData.grabbedObject = closestObject;
                 closestObject.body.type = CANNON.Body.KINEMATIC;
@@ -416,7 +423,10 @@
                 direction.subVectors(targetPos, spawnPosition).normalize();
                 spawnPosition.add(direction.clone().multiplyScalar(0.5));
             } else {
-                gun.mesh.getWorldDirection(direction);
+                // For player, get direction from the gun mesh itself
+                const gunDirection = new THREE.Vector3(0, 0, -1); // Muzzle direction in local space
+                gun.mesh.getWorldDirection(gunDirection);
+                direction.copy(gunDirection);
                 gun.mesh.getWorldPosition(spawnPosition);
                 spawnPosition.add(direction.clone().multiplyScalar(gun.gunType === 'rocketlauncher' ? 1.5 : 0.5));
             }
@@ -451,9 +461,9 @@
             const bulletBody = new CANNON.Body({
                 mass: options.isRocket ? 2 : 0.1,
                 shape: new CANNON.Sphere(bulletRadius),
-                position: position,
-                collisionFilterGroup: 2,
-                collisionFilterMask: 1,
+                position: new CANNON.Vec3().copy(position),
+                collisionFilterGroup: 2, // Bullets are in group 2
+                collisionFilterMask: 1, // They collide only with group 1 (default)
             });
             
             if (!isEnemy && controller) {
@@ -473,6 +483,7 @@
 
             bulletBody.addEventListener("collide", (event) => handleCollision(event, bullet));
 
+            // Automatically remove bullet after some time
             setTimeout(() => {
                 scheduleBulletForRemoval(bullet);
             }, options.isFlame ? 500 : 5000);
@@ -491,6 +502,7 @@
                 hitObject.hpBar.inner.scale.x = Math.max(0, hitObject.health / hitObject.maxHealth);
             }
             
+            // Always remove the bullet on first contact
             scheduleBulletForRemoval(bullet);
         }
 
@@ -502,18 +514,21 @@
             explosionSphere.position.copy(position);
             scene.add(explosionSphere);
             
+            // Find all physical objects and apply damage/force
             physicalObjects.forEach(obj => {
-                if (obj.isEnemy) {
-                    const dist = obj.body.position.distanceTo(position);
-                    if (dist < radius) {
+                const dist = obj.body.position.distanceTo(position);
+                if (dist < radius) {
+                    if (obj.isEnemy) {
                         const damageFalloff = 1 - (dist / radius);
                         obj.health -= damage * damageFalloff;
                         obj.hpBar.inner.scale.x = Math.max(0, obj.health / obj.maxHealth);
-
+                    }
+                    // Apply impulse to non-kinematic objects
+                    if (obj.body.type !== CANNON.Body.KINEMATIC) {
                         const impulseDir = new CANNON.Vec3();
                         obj.body.position.vsub(position, impulseDir);
                         impulseDir.normalize();
-                        const impulseStrength = 500 * damageFalloff * obj.body.mass;
+                        const impulseStrength = 500 * (1 - dist / radius) * obj.body.mass;
                         obj.body.applyImpulse(impulseDir.scale(impulseStrength), obj.body.position);
                     }
                 }
@@ -557,17 +572,12 @@
         function handleController(controller) {
             const grabbedObject = controller.userData.grabbedObject;
             if (grabbedObject) {
-                if(grabbedObject.isGun){
-                     controller.getWorldPosition(grabbedObject.body.position);
-                     controller.getWorldQuaternion(grabbedObject.body.quaternion);
-                } else {
-                    const controllerPosition = new THREE.Vector3();
-                    const controllerQuaternion = new THREE.Quaternion();
-                    controller.getWorldPosition(controllerPosition);
-                    controller.getWorldQuaternion(controllerQuaternion);
-                    grabbedObject.body.position.copy(controllerPosition);
-                    grabbedObject.body.quaternion.copy(controllerQuaternion);
-                }
+                 const controllerPosition = new THREE.Vector3();
+                 const controllerQuaternion = new THREE.Quaternion();
+                 controller.getWorldPosition(controllerPosition);
+                 controller.getWorldQuaternion(controllerQuaternion);
+                 grabbedObject.body.position.copy(controllerPosition);
+                 grabbedObject.body.quaternion.copy(controllerQuaternion);
             }
         }
         
@@ -600,18 +610,29 @@
         
         function updateEnemies() {
             const playerPos = camera.position;
+            
+            // --- FIX START ---
+            // Clamp the target position's Y-coordinate to prevent it from going below the ground.
+            // The lookAt() function can become unstable and produce NaN values if the target
+            // is directly below or too close to the object, which can happen when the VR player crouches
+            // and their head goes "through" the virtual floor. This was causing the simulation to crash.
+            const targetPos = playerPos.clone();
+            targetPos.y = Math.max(targetPos.y, 0.5); // Use 0.5m as a minimum aiming height
+            // --- FIX END ---
 
             for (const enemy of physicalObjects) {
                 if(!enemy.isEnemy) continue;
                 
-                // Keep HP bar facing camera
-                enemy.hpBar.background.lookAt(playerPos);
+                // Keep HP bar facing camera (use the new clamped position)
+                enemy.hpBar.background.lookAt(targetPos);
 
                 const enemyPos = enemy.body.position;
-                const directionToPlayer = new THREE.Vector3().subVectors(playerPos, enemyPos);
+                // Use the new clamped position for direction calculation
+                const directionToPlayer = new THREE.Vector3().subVectors(targetPos, enemyPos);
                 
                 if (enemy.type === 'tank') {
-                    enemy.turret.lookAt(playerPos);
+                    // Use the new clamped position for the turret's lookAt
+                    enemy.turret.lookAt(targetPos);
                     const now = performance.now();
                     if (now - enemy.lastShotTime > 3000) {
                         enemy.lastShotTime = now;
@@ -620,7 +641,8 @@
                          createBullet(spawnPos, directionToPlayer.normalize(), {bulletSpeed: 30, damage: 50, fireRate: 3000, lastFireTime: enemy.lastShotTime}, null, true, {isRocket: true, explosionRadius: 3});
                     }
                 } else if (enemy.type === 'human') {
-                    enemy.mesh.lookAt(playerPos.x, enemy.mesh.position.y, playerPos.z);
+                    // This part was already safe, but for consistency, we'll use the new targetPos
+                    enemy.mesh.lookAt(targetPos.x, enemy.mesh.position.y, targetPos.z);
                     enemy.body.quaternion.copy(enemy.mesh.quaternion);
 
                     const now = performance.now();
@@ -632,7 +654,7 @@
                             damage: enemy.weaponType === 'handgun' ? 5 : 3,
                             fireRate: fireRate, lastFireTime: enemy.lastShotTime
                         };
-                         fireGun(gun, null, true, playerPos);
+                         fireGun(gun, null, true, targetPos);
                     }
                 }
             }
@@ -647,39 +669,28 @@
         function animate() {
             const delta = Math.min(clock.getDelta(), 0.1);
             
+            // The main physics and game logic loop
+            world.step(timeStep, delta);
+            
             if (renderer.xr.isPresenting) {
-                world.step(timeStep, delta);
-
-                [controller1, controller2].forEach(controller => {
+                 [controller1, controller2].forEach(controller => {
                      if (controller) {
                         updateControllerVelocities(controller, delta);
-                        // A special check for grabbing guns
-                        if (!controller.userData.grabbedObject) {
-                            const controllerPos = new THREE.Vector3();
-                            controller.getWorldPosition(controllerPos);
-                            for (const obj of physicalObjects) {
-                                if (obj.isGun && controllerPos.distanceTo(obj.mesh.position) < 0.15) {
-                                    controller.userData.grabbedObject = obj;
-                                    obj.body.type = CANNON.Body.KINEMATIC;
-                                    break;
-                                }
-                            }
-                        }
                         handleController(controller);
                         handleContinuousFire(controller);
                     }
                 });
-                
                 updateEnemies();
-                
-                for (const obj of physicalObjects) {
-                    if (obj.body.type !== CANNON.Body.KINEMATIC) {
-                        obj.mesh.position.copy(obj.body.position);
-                        obj.mesh.quaternion.copy(obj.body.quaternion);
-                    } else { // Sync grabbed object's mesh to its body
-                        obj.mesh.position.copy(obj.body.position);
-                        obj.mesh.quaternion.copy(obj.body.quaternion);
-                    }
+            }
+
+            // Sync all visual meshes with their physics bodies
+            for (const obj of physicalObjects) {
+                if (obj.body.type !== CANNON.Body.KINEMATIC) {
+                    obj.mesh.position.copy(obj.body.position);
+                    obj.mesh.quaternion.copy(obj.body.quaternion);
+                } else { // Also sync kinematic objects (grabbed objects)
+                    obj.mesh.position.copy(obj.body.position);
+                    obj.mesh.quaternion.copy(obj.body.quaternion);
                 }
             }
             
@@ -690,4 +701,3 @@
     </script>
 </body>
 </html>
-
