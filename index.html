@@ -343,6 +343,8 @@
 
             const direction = new THREE.Vector3();
             gun.mesh.getWorldDirection(direction);
+            direction.negate();
+
 
             const spawnPosition = new THREE.Vector3();
             gun.mesh.getWorldPosition(spawnPosition);
