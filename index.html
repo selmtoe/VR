@@ -423,15 +423,17 @@
                 direction.subVectors(targetPos, spawnPosition).normalize();
                 spawnPosition.add(direction.clone().multiplyScalar(0.5));
             } else {
-    // 銃のメッシュのワールド座標における forward (前方向) を取得する
-        gun.mesh.getWorldPosition(spawnPosition);
-        // メッシュのワールド行列から前方ベクトルを抽出
-        gun.mesh.matrixWorld.getBasis(direction).normalize();
-        // 前方ベクトルは通常は(1,0,0)か(0,1,0)か(0,0,1)なので、銃口の向きに合わせる
-        // このコードの場合、銃口は -Z 方向を向いている
-        direction.multiplyScalar(-1);
-        
-        spawnPosition.add(direction.clone().multiplyScalar(gun.gunType === 'rocketlauncher' ? 1.5 : 0.5));
+                // --- FIX START ---
+                // Get the world direction of the gun.
+                // The gun models might be oriented with their muzzle facing the +Z direction in local space,
+                // while Three.js's getWorldDirection assumes -Z is forward.
+                // By negating the resulting vector, we ensure the bullet fires from the correct end.
+                gun.mesh.getWorldDirection(direction);
+                direction.negate(); // Reverse the direction to fire forward.
+                // --- FIX END ---
+                
+                gun.mesh.getWorldPosition(spawnPosition);
+                spawnPosition.add(direction.clone().multiplyScalar(gun.gunType === 'rocketlauncher' ? 1.5 : 0.5));
             }
             
             const fireActions = {
@@ -614,27 +616,18 @@
         function updateEnemies() {
             const playerPos = camera.position;
             
-            // --- FIX START ---
-            // Clamp the target position's Y-coordinate to prevent it from going below the ground.
-            // The lookAt() function can become unstable and produce NaN values if the target
-            // is directly below or too close to the object, which can happen when the VR player crouches
-            // and their head goes "through" the virtual floor. This was causing the simulation to crash.
             const targetPos = playerPos.clone();
-            targetPos.y = Math.max(targetPos.y, 0.5); // Use 0.5m as a minimum aiming height
-            // --- FIX END ---
+            targetPos.y = Math.max(targetPos.y, 0.5); 
 
             for (const enemy of physicalObjects) {
                 if(!enemy.isEnemy) continue;
                 
-                // Keep HP bar facing camera (use the new clamped position)
                 enemy.hpBar.background.lookAt(targetPos);
 
                 const enemyPos = enemy.body.position;
-                // Use the new clamped position for direction calculation
                 const directionToPlayer = new THREE.Vector3().subVectors(targetPos, enemyPos);
                 
                 if (enemy.type === 'tank') {
-                    // Use the new clamped position for the turret's lookAt
                     enemy.turret.lookAt(targetPos);
                     const now = performance.now();
                     if (now - enemy.lastShotTime > 3000) {
@@ -644,7 +637,6 @@
                          createBullet(spawnPos, directionToPlayer.normalize(), {bulletSpeed: 30, damage: 50, fireRate: 3000, lastFireTime: enemy.lastShotTime}, null, true, {isRocket: true, explosionRadius: 3});
                     }
                 } else if (enemy.type === 'human') {
-                    // This part was already safe, but for consistency, we'll use the new targetPos
                     enemy.mesh.lookAt(targetPos.x, enemy.mesh.position.y, targetPos.z);
                     enemy.body.quaternion.copy(enemy.mesh.quaternion);
 
@@ -672,7 +664,6 @@
         function animate() {
             const delta = Math.min(clock.getDelta(), 0.1);
             
-            // The main physics and game logic loop
             world.step(timeStep, delta);
             
             if (renderer.xr.isPresenting) {
@@ -686,12 +677,11 @@
                 updateEnemies();
             }
 
-            // Sync all visual meshes with their physics bodies
             for (const obj of physicalObjects) {
                 if (obj.body.type !== CANNON.Body.KINEMATIC) {
                     obj.mesh.position.copy(obj.body.position);
                     obj.mesh.quaternion.copy(obj.body.quaternion);
-                } else { // Also sync kinematic objects (grabbed objects)
+                } else {
                     obj.mesh.position.copy(obj.body.position);
                     obj.mesh.quaternion.copy(obj.body.quaternion);
                 }
